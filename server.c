@@ -7,122 +7,128 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 
-#define MAX_CONTENT_SIZE 65536  // Define the maximum size of file content buffer(64KB)
+#define MAX_BUFFER_SIZE 65536  // Maximum size for file read buffer(64KB)
 
-// Custom error handling function that prints the error message and exits the application
-void handle_error(char *msg)
+// Function to handle errors: prints the error message and exits the application
+void handleError(char *errorMessage)
 {
-    perror(msg);  // Use perror to give the error message with the context of the last error
-    exit(EXIT_FAILURE);  // Exit the program with a failure response
+    perror(errorMessage);  // Print the system error message
+    exit(EXIT_FAILURE);  // Exit with a failure status
 }
 
 int main(int argc, char *argv[])
 {
-    int server_fd, client_fd; // Descriptors for the server socket and the client socket
-    unsigned int port_number; // Variable to store the port number on which the server will listen
-    struct sockaddr_in server_addr, client_addr; // Structures to store address information for the server and client
-    unsigned int client_addr_len; // Variable to store the length of the client address structure
+    int serverSocket, clientSocket;  // Descriptors for server and client sockets
+    struct sockaddr_in serverAddr, clientAddr;  // Structures to store IP address and port for server and client
+    socklen_t clientAddrLen;  // Length of client address data structure
+    unsigned int serverPort;  // Port number for the server to listen on
+    char requestBuffer[1024];  // Buffer to store incoming client requests
 
-    char request_buffer[1024]; // Buffer to store the HTTP request from the client
-
-    // Check if the port number is provided as a command-line argument
+    // Check if the server port number is provided as a command-line argument
     if (argc < 2)
-        handle_error("ERROR: Port Number Not Provided");
-    port_number = atoi(argv[1]); // Convert the command-line string argument to an integer
+        handleError("ERROR: Port number not provided");  // Exit if no port provided
+    serverPort = atoi(argv[1]);  // Convert the port number from string to integer
 
-    // Create a socket for IPv4 with TCP communication
-    server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (server_fd < 0)
-        handle_error("ERROR: Failed to Open Socket");
+    // Create a TCP socket for IPv4 communication
+    serverSocket = socket(AF_INET, SOCK_STREAM, 0);
+    if (serverSocket < 0)
+        handleError("ERROR: Unable to open socket");  // Check for socket creation failure
 
-    // Initialize server address structure
-    server_addr.sin_family = AF_INET;  // Set the family of the address to IPv4
-    server_addr.sin_port = htons(port_number);  // Convert the port number to network byte order
-    server_addr.sin_addr.s_addr = INADDR_ANY;  // Allow the server to accept connections on any interface
+    // Set up the server address structure
+    serverAddr.sin_family = AF_INET;  // Address family for IPv4
+    serverAddr.sin_port = htons(serverPort);  // Convert the port number to network byte order
+    serverAddr.sin_addr.s_addr = INADDR_ANY;  // Listen on all network interfaces
 
-    int reuse_addr = 1;  // Enable reusing the address immediately after the program terminates
-    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr));
+    // Enable port reuse to avoid "address already in use" errors
+    int optValue = 1;
+    setsockopt(serverSocket, SOL_SOCKET, SO_REUSEADDR, &optValue, sizeof(optValue));
 
-    // Bind the socket to the IP address and port
-    if (bind(server_fd, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
-        handle_error("ERROR: Failed to Bind");
+    // Bind the server socket to the specified IP address and port
+    if (bind(serverSocket, (struct sockaddr *)&serverAddr, sizeof(serverAddr)) < 0)
+        handleError("ERROR: Binding failed");  // Check for binding error
 
-    // Start listening on the server socket with a maximum of 5 pending connections
-    if (listen(server_fd, 5) < 0)
-        handle_error("ERROR: Failed to Listen");
+    // Start listening on the server socket, with a maximum of 5 pending connections
+    if (listen(serverSocket, 5) < 0)
+        handleError("ERROR: Listening failed");  // Check for listening error
 
-    // Server main loop to accept client connections repeatedly
+    // Server main loop to handle incoming connections
     while (1)
     {
-        // Accept a new connection and create a new socket for this client
-        client_addr_len = sizeof(client_addr);
-        client_fd = accept(server_fd, (struct sockaddr *)&server_addr, &client_addr_len);
-        if (client_fd < 0)
-            handle_error("ERROR: Failed to Accept Connection");
+        clientAddrLen = sizeof(clientAddr);
+        // Accept a connection request from a client
+        clientSocket = accept(serverSocket, (struct sockaddr *)&serverAddr, &clientAddrLen);
+        if (clientSocket < 0)
+            handleError("ERROR: Accepting connection failed");  // Check for accepting error
 
-        // Clear the request buffer to receive a new message
-        memset(request_buffer, 0, sizeof(request_buffer));
+        memset(requestBuffer, 0, sizeof(requestBuffer));  // Clear the buffer before reading
 
-        // Read the client's HTTP request into the buffer
-        if (read(client_fd, request_buffer, 1023) < 0)
-            handle_error("ERROR: Failed to Read from Socket");
+        // Read the HTTP request from the client into the buffer
+        if (read(clientSocket, requestBuffer, 1023) < 0)
+            handleError("ERROR: Reading from socket failed");  // Check for reading error
 
-        // Display the request for debugging purposes
+        // Output the HTTP request for debugging
         printf("=============================================\n");
-        printf("Request: %s\n", request_buffer);
+        printf("Request: %s\n", requestBuffer);
 
-        char file_path[1024], content_type[128]; // Variables to hold the file path and content type
-        // Attempt to parse the request assuming it's in the format "GET /filename HTTP/1.x"
-        if (sscanf(request_buffer, "GET %s HTTP/1.", file_path) != 1)
-            write(client_fd, "HTTP/1.1 400 Bad Request\n\n", 25);  // Send a bad request response if parsing fails
+        char filePath[1024], contentType[128];  // Variables to hold the requested file path and content type
+        // Parse the HTTP GET request to extract the file path
+        if (sscanf(requestBuffer, "GET %s HTTP/1.", filePath) != 1)
+            write(clientSocket, "HTTP/1.1 400 Bad Request\n\n", 26);  // Handle bad request
         else
         {
-            // Check if the root is accessed and redirect to index.html
-            if (strcmp(file_path, "/") == 0)
-                strcpy(file_path, "/index.html");
+            // Serve index.html if the root directory is accessed
+            if (strcmp(filePath, "/") == 0)
+                strcpy(filePath, "/index.html");
 
-            // Extract the file extension to determine the content type
-            char *file_ext = strrchr(file_path, '.');
-            if (file_ext) // Check if a file extension was found
+            // Determine the content type based on the file extension
+            char *fileExt = strrchr(filePath, '.');
+            if (fileExt)
             {
-                // Determine the content type based on the file extension
-                determine_content_type(file_ext, content_type);
+                // Map file extension to MIME types
+                if (strcmp(fileExt, ".html") == 0) strcpy(contentType, "text/html");
+                else if (strcmp(fileExt, ".gif") == 0) strcpy(contentType, "image/gif");
+                else if (strcmp(fileExt, ".jpeg") == 0 || strcmp(fileExt, ".jpg") == 0) strcpy(contentType, "image/jpeg");
+                else if (strcmp(fileExt, ".png") == 0) strcpy(contentType, "image/png");
+                else if (strcmp(fileExt, ".mp3") == 0) strcpy(contentType, "audio/mpeg");
+                else if (strcmp(fileExt, ".pdf") == 0) strcpy(contentType, "application/pdf");
+                else if (strcmp(fileExt, ".ico") == 0) strcpy(contentType, "image/x-icon");
+                else strcpy(contentType, "text/plain");
             }
-            else
-                strcpy(content_type, "text/html"); // Default content type if no extension is found
+            else {
+                strcpy(contentType, "text/html");  // Default content type
+            }
 
-            // Concatenate to form the complete path to the file
-            char complete_path[1029] = ".";
-            strcat(complete_path, file_path);
-            printf("Path: %s\n", complete_path);
-            printf("Content Type: %s\n", content_type);
+            // Print the path and content type for debugging
+            printf("Path: %s\n", filePath);
+            printf("Content-Type: %s\n", contentType);
 
-            // Try to open the requested file
-            int file_descriptor = open(complete_path, O_RDONLY);
-            if (file_descriptor == -1)
-                write(client_fd, "HTTP/1.1 404 Not Found\n\n", 24);  // Send a 404 response if the file is not found
-            else
-            {
-                // Obtain file details like size
-                struct stat file_stat;
-                fstat(file_descriptor, &file_stat);
-                char http_response_header[1024];
-                snprintf(http_response_header, 1024, "HTTP/1.1 200 OK\nContent-Length: %ld\nContent-Type: %s\n\n", file_stat.st_size, content_type);
-                write(client_fd, http_response_header, strlen(http_response_header)); // Send the HTTP response header
+            // Construct the full file path
+            char fullFilePath[1029] = ".";
+            strcat(fullFilePath, filePath);
 
-                // Send the file content in blocks
-                char file_content[MAX_CONTENT_SIZE];
-                ssize_t bytes_read;
-                while ((bytes_read = read(file_descriptor, file_content, MAX_CONTENT_SIZE)) > 0)
-                {
-                    write(client_fd, file_content, bytes_read);
-                }
-                close(file_descriptor); // Close the file after sending
+            // Attempt to open the requested file
+            int fileDesc = open(fullFilePath, O_RDONLY);
+            if (fileDesc == -1) {
+                write(clientSocket, "HTTP/1.1 404 Not Found\n\n", 24);  // Send a 404 Not Found error if file is missing
+            } else {
+                struct stat fileInfo;
+                fstat(fileDesc, &fileInfo);  // Get file size
+                char httpResponse[1024];
+                // Create the HTTP response header
+                snprintf(httpResponse, sizeof(httpResponse), "HTTP/1.1 200 OK\nContent-Length: %ld\nContent-Type: %s\n\n", fileInfo.st_size, contentType);
+                write(clientSocket, httpResponse, strlen(httpResponse));  // Send the HTTP response
+
+                char fileContent[MAX_BUFFER_SIZE];
+                ssize_t bytesRead;
+                // Read and send the file content in chunks
+                while ((bytesRead = read(fileDesc, fileContent, MAX_BUFFER_SIZE)) > 0)
+                    write(clientSocket, fileContent, bytesRead);
+                close(fileDesc);  // Close the file after sending
             }
         }
-        close(client_fd); // Close the client connection
+        close(clientSocket);  // Close the client socket
         printf("=============================================\n");
     }
-    close(server_fd); // Close the server socket
+    close(serverSocket);  // Shut down the server
     return 0;
 }
